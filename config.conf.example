@@ -1,0 +1,8 @@
+[device]
+ip = 192.168.1.10
+username = admin
+password = CHANGE_ME
+
+[gateway]
+url = https://api.storeyes.io/api/staff/employee-logs/punch
+; api_key = CHANGE_ME
