@@ -1,8 +1,9 @@
 [device]
-ip = 192.168.1.10
+mac = 00:11:22:33:44:55
 username = admin
 password = CHANGE_ME
 
 [gateway]
-url = https://api.storeyes.io/api/staff/employee-logs/punch
+punch_url = https://api.storeyes.io/api/staff/employee-logs/punch
+work_mode_url = https://api.storeyes.io/api/staff/work-mode
 ; api_key = CHANGE_ME

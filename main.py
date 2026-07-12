@@ -3,6 +3,8 @@ import re
 import sys
 import argparse
 import configparser
+import getpass
+import subprocess
 import requests
 from requests.auth import HTTPDigestAuth
 from datetime import datetime, date
@@ -11,15 +13,23 @@ from pathlib import Path
 
 _HERE = Path(__file__).parent.resolve()
 
+CONFIG_FILE = _HERE / "config.conf"
+DEFAULT_PUNCH_URL = "https://api.storeyes.io/api/staff/employee-logs/punch"
+DEFAULT_WORK_MODE_URL = "https://api.storeyes.io/api/staff/work-mode"
+
+# Read leniently: --configure has to work with no config.conf on disk yet.
 _cfg = configparser.ConfigParser()
-_cfg.read(_HERE / "config.conf")
+_cfg.read(CONFIG_FILE)
 
-DEVICE_IP = _cfg["device"]["ip"]
-AUTH = HTTPDigestAuth(_cfg["device"]["username"], _cfg["device"]["password"])
+DEVICE_MAC = _cfg.get("device", "mac", fallback="").strip().lower()
+AUTH = HTTPDigestAuth(
+    _cfg.get("device", "username", fallback=""),
+    _cfg.get("device", "password", fallback=""),
+)
 
-GATEWAY_URL = _cfg["gateway"]["url"]
-GATEWAY_API_KEY = _cfg["gateway"].get("api_key") or None
-WORK_MODE_URL = GATEWAY_URL.split("/api/staff/", 1)[0] + "/api/staff/work-mode"
+PUNCH_URL = _cfg.get("gateway", "punch_url", fallback=DEFAULT_PUNCH_URL)
+WORK_MODE_URL = _cfg.get("gateway", "work_mode_url", fallback=DEFAULT_WORK_MODE_URL)
+GATEWAY_API_KEY = _cfg.get("gateway", "api_key", fallback="") or None
 
 SCHEDULE_FILE = _HERE / "schedule"
 CRON_FILE = Path("/etc/cron.d/staff-schedule")
@@ -102,8 +112,77 @@ def is_punch(e: dict) -> bool:
     )
 
 
+MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+
+
+def _prompt(label: str, current: str = "", secret: bool = False) -> str:
+    """Ask until non-empty; Enter keeps the current value when there is one."""
+    hint = " [keep current]" if (current and secret) else (f" [{current}]" if current else "")
+    ask = getpass.getpass if secret else input
+    while True:
+        value = ask(f"{label}{hint}: ").strip() or current
+        if value:
+            return value
+        print("  value is required")
+
+
+def configure():
+    """Interactively (re)write config.conf."""
+    print(f"Configuring {CONFIG_FILE}\n")
+
+    while True:
+        mac = _prompt("Device MAC address", DEVICE_MAC).lower()
+        if MAC_RE.match(mac):
+            break
+        print("  expected format aa:bb:cc:dd:ee:ff")
+
+    username = _prompt("Device username", _cfg.get("device", "username", fallback="admin"))
+    password = _prompt("Device password", _cfg.get("device", "password", fallback=""), secret=True)
+
+    out = configparser.ConfigParser()
+    out["device"] = {"mac": mac, "username": username, "password": password}
+    out["gateway"] = {"punch_url": PUNCH_URL, "work_mode_url": WORK_MODE_URL}
+    if GATEWAY_API_KEY:
+        out["gateway"]["api_key"] = GATEWAY_API_KEY
+
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        out.write(f)
+    CONFIG_FILE.chmod(0o600)  # holds the device password
+
+    print(f"\n[CONFIG] written to {CONFIG_FILE}")
+    print(f"  device     {mac} as {username}")
+    print(f"  punch      {PUNCH_URL}")
+    print(f"  work mode  {WORK_MODE_URL}")
+
+
+_device_ip = None
+
+
+def device_ip() -> str:
+    """Find the device on the LAN by MAC. Cached for the life of the process."""
+    global _device_ip
+    if _device_ip is not None:
+        return _device_ip
+
+    if not DEVICE_MAC:
+        raise RuntimeError(f"No device MAC in {CONFIG_FILE} — run with --configure first")
+
+    cmd = f"sudo arp-scan --localnet | awk '/{DEVICE_MAC}/{{print $1; exit}}'"
+    r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=120)
+    ip = r.stdout.strip()
+    if not ip:
+        raise RuntimeError(
+            f"Device {DEVICE_MAC} not found on the local network "
+            f"(arp-scan exit {r.returncode}: {r.stderr.strip()})"
+        )
+
+    _device_ip = ip
+    print(f"[DEVICE] {DEVICE_MAC} → {ip}\n")
+    return ip
+
+
 def api_post(path, payload):
-    url = f"http://{DEVICE_IP}{path}?format=json"
+    url = f"http://{device_ip()}{path}?format=json"
     r = requests.post(url, json=payload, auth=AUTH, timeout=5)
     r.raise_for_status()
     return r.json()
@@ -207,7 +286,7 @@ def sync_time():
   <timeZone>{tz_str}</timeZone>
 </Time>"""
     r = requests.put(
-        f"http://{DEVICE_IP}/ISAPI/System/time",
+        f"http://{device_ip()}/ISAPI/System/time",
         data=xml,
         auth=AUTH,
         headers={"Content-Type": "application/xml"},
@@ -355,7 +434,7 @@ def push_to_gateway(users: dict, raw_users: list, events: list, entry: dict):
         "punches": punches,
     }
 
-    r = requests.post(GATEWAY_URL, json=body, headers=headers, timeout=10)
+    r = requests.post(PUNCH_URL, json=body, headers=headers, timeout=10)
     if r.status_code in (200, 204):
         print(r.json())
         print(f"[GATEWAY] OK — {len(employees)} employees, {len(punches)} punches")
@@ -376,14 +455,23 @@ def main():
         action="store_true",
         help="fetch work modes from the gateway and rewrite the schedule file",
     )
+    parser.add_argument(
+        "--configure",
+        action="store_true",
+        help="interactively write config.conf (device MAC, username, password)",
+    )
     args = parser.parse_args()
+
+    if args.configure:
+        configure()
+        return
 
     if args.sync:
         sync_work_modes()
         return
 
     if args.schedule_id is None:
-        parser.error("schedule_id is required (or use --sync)")
+        parser.error("schedule_id is required (or use --sync / --configure)")
 
     entry = read_schedule_entry(args.schedule_id)
     print(f"[SCHEDULE] #{args.schedule_id} → shift {entry['shiftId']} "
