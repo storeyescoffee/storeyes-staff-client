@@ -1,6 +1,4 @@
 [device]
-mac = 00:11:22:33:44:55
-; last known IP — auto-refreshed by an arp-scan whenever it stops answering
 ip = 192.168.1.10
 username = admin
 password = CHANGE_ME

@@ -1,8 +1,8 @@
 """Entrypoint: push one shift boundary's users + punches to the gateway.
 
-  main.py --configure [--ip]   write config.conf
-  main.py --sync               refresh the schedule file and cron jobs
-  main.py <schedule_id>        run the shift boundary on that schedule line
+  main.py --configure    write config.conf
+  main.py --sync         refresh the schedule file and cron jobs
+  main.py <schedule_id>  run the shift boundary on that schedule line
 """
 import argparse
 from datetime import datetime
@@ -75,22 +75,13 @@ def main():
     parser.add_argument(
         "--configure",
         action="store_true",
-        help="interactively write config.conf (device MAC, username, password)",
-    )
-    parser.add_argument(
-        "--ip",
-        action="store_true",
-        help="with --configure, also prompt for the device IP "
-             "(otherwise it is discovered by MAC and cached)",
+        help="interactively write config.conf (device IP, username, password)",
     )
     args = parser.parse_args()
 
     if args.configure:
-        configure(ask_ip=args.ip)
+        configure()
         return
-
-    if args.ip:
-        parser.error("--ip only makes sense together with --configure")
 
     if args.sync:
         sync_work_modes()
