@@ -1,4 +1,6 @@
-"""Hikvision device: the ISAPI calls."""
+"""Hikvision device: locating it, and the ISAPI calls."""
+import re
+import subprocess
 from datetime import datetime
 
 import requests
@@ -61,13 +63,88 @@ def resolve_event(major, minor):
     return label, success
 
 
-# --- ISAPI -------------------------------------------------------------------
+# --- locating the device -----------------------------------------------------
+
+def _mac_digits(mac: str) -> str:
+    """'48:D0:1C:...' -> '48d01c...' so separators/case can't break a comparison."""
+    return re.sub(r"[^0-9a-f]", "", mac.lower())
+
+
+def _is_device(ip: str) -> bool:
+    """True if the box answering at this IP is *our* device.
+
+    A plain ping/port check isn't enough: after a DHCP shuffle the old IP may
+    well be live, just belonging to something else.
+    """
+    try:
+        r = requests.get(f"http://{ip}/ISAPI/System/deviceInfo?format=json",
+                         auth=config.AUTH, timeout=3)
+        r.raise_for_status()
+        mac = r.json()["DeviceInfo"]["macAddress"]
+    except Exception:
+        return False
+    return _mac_digits(mac) == _mac_digits(config.DEVICE_MAC)
+
+
+def scan_for_device() -> str:
+    """Sweep the LAN for the configured MAC and return its current IP."""
+    cmd = f"sudo arp-scan --localnet | awk '/{config.DEVICE_MAC}/{{print $1; exit}}'"
+    r = subprocess.run(["sh", "-c", cmd], capture_output=True, text=True, timeout=120)
+    ip = r.stdout.strip()
+    if not ip:
+        raise RuntimeError(
+            f"Device {config.DEVICE_MAC} not found on the local network "
+            f"(arp-scan exit {r.returncode}: {r.stderr.strip()})"
+        )
+    return ip
+
+
+_device_ip = None
+
+
+def _resolve_by_mac() -> str:
+    """The device's IP: the cached one if it still answers, else a fresh scan.
+
+    A successful scan writes the new IP back to config.conf, so the arp-scan
+    only happens the first time after the address actually changes.
+    """
+    if not config.DEVICE_MAC:
+        raise RuntimeError(f"No device MAC in {config.CONFIG_FILE} — run with --configure first")
+
+    if config.DEVICE_IP and _is_device(config.DEVICE_IP):
+        print(f"[DEVICE] {config.DEVICE_MAC} at {config.DEVICE_IP} (cached)\n")
+        return config.DEVICE_IP
+
+    if config.DEVICE_IP:
+        print(f"[DEVICE] {config.DEVICE_IP} is not {config.DEVICE_MAC} any more — scanning ...")
+
+    ip = scan_for_device()
+    config.save_device_ip(ip)
+    print(f"[DEVICE] {config.DEVICE_MAC} → {ip} (saved to {config.CONFIG_FILE.name})\n")
+    return ip
+
 
 def device_ip() -> str:
-    if not config.DEVICE_IP:
-        raise RuntimeError(f"No device IP in {config.CONFIG_FILE} — run with --configure first")
-    return config.DEVICE_IP
+    """The device's IP, however config.conf says to arrive at one."""
+    global _device_ip
+    if _device_ip is not None:
+        return _device_ip
 
+    if config.RESOLUTION == config.RESOLUTION_MAC:
+        _device_ip = _resolve_by_mac()
+    elif config.RESOLUTION == config.RESOLUTION_IP:
+        if not config.DEVICE_IP:
+            raise RuntimeError(f"No device IP in {config.CONFIG_FILE} — run with --configure first")
+        _device_ip = config.DEVICE_IP
+    else:
+        raise RuntimeError(
+            f"Unknown device resolution {config.RESOLUTION!r} in {config.CONFIG_FILE} — "
+            f"expected one of {', '.join(config.RESOLUTIONS)}"
+        )
+    return _device_ip
+
+
+# --- ISAPI -------------------------------------------------------------------
 
 def api_post(path, payload):
     url = f"http://{device_ip()}{path}?format=json"

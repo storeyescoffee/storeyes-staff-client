@@ -1,4 +1,5 @@
 """Config file access: load, expose, persist."""
+import re
 import configparser
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,11 +19,21 @@ TZ = ZoneInfo("Africa/Casablanca")
 DEFAULT_PUNCH_URL = "https://api.storeyes.io/api/staff/employee-logs/punch"
 DEFAULT_WORK_MODE_URL = "https://api.storeyes.io/api/staff/work-mode"
 
+MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+
+RESOLUTION_IP = "ip"    # config.conf carries the address; talk to it as-is
+RESOLUTION_MAC = "mac"  # find the address on the LAN by MAC, then cache it in `ip`
+RESOLUTIONS = (RESOLUTION_IP, RESOLUTION_MAC)
+
 # Read leniently: --configure has to work with no config.conf on disk yet.
 cfg = configparser.ConfigParser()
 cfg.read(CONFIG_FILE)
 
-DEVICE_IP = cfg.get("device", "ip", fallback="").strip()
+# Read these through the module (config.DEVICE_IP), not `from config import ...`:
+# save_device_ip() rebinds DEVICE_IP, and a from-import would keep the stale value.
+RESOLUTION = cfg.get("device", "resolution", fallback=RESOLUTION_IP).strip().lower()
+DEVICE_MAC = cfg.get("device", "mac", fallback="").strip().lower()
+DEVICE_IP = cfg.get("device", "ip", fallback="").strip()  # under `mac`, only a cache
 AUTH = HTTPDigestAuth(
     cfg.get("device", "username", fallback=""),
     cfg.get("device", "password", fallback=""),
@@ -38,3 +49,13 @@ def write():
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         cfg.write(f)
     CONFIG_FILE.chmod(0o600)  # holds the device password
+
+
+def save_device_ip(ip: str):
+    """Cache a freshly discovered IP so the next run can skip the scan."""
+    global DEVICE_IP
+    if not cfg.has_section("device"):
+        cfg.add_section("device")
+    cfg["device"]["ip"] = ip
+    DEVICE_IP = ip
+    write()

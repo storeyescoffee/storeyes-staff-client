@@ -75,7 +75,7 @@ def main():
     parser.add_argument(
         "--configure",
         action="store_true",
-        help="interactively write config.conf (device IP, username, password)",
+        help="interactively write config.conf (how to locate the device, credentials)",
     )
     args = parser.parse_args()
 
