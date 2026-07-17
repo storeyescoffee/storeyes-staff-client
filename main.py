@@ -1,11 +1,14 @@
 """Entrypoint: push one shift boundary's users + punches to the gateway.
 
-  main.py --configure    write config.conf
-  main.py --sync         refresh the schedule file and cron jobs
-  main.py <schedule_id>  run the shift boundary on that schedule line
+  main.py --configure                write config.conf
+  main.py --sync                     refresh the schedule file and cron jobs
+  main.py <schedule_id>              run the shift boundary on that schedule line
+  main.py <schedule_id> --dry-run    same, but don't push to the gateway
+  main.py --dry-run [--date YYYY-MM-DD]  show today's (or that day's) access control
+                                          results without a schedule id
 """
 import argparse
-from datetime import datetime
+from datetime import date as date_cls, datetime
 
 from src import config
 from src import device
@@ -15,10 +18,12 @@ from src.sync import read_schedule_entry, sync_work_modes
 from src.util import day_bounds
 
 
-def run(schedule_id: int):
-    entry = read_schedule_entry(schedule_id)
-    print(f"[SCHEDULE] #{schedule_id} → shift {entry['shiftId']} "
-          f"{entry['method']} @ {entry['time']}\n")
+def run(schedule_id: int = None, dry_run: bool = False, date: date_cls = None):
+    entry = None
+    if schedule_id is not None:
+        entry = read_schedule_entry(schedule_id)
+        print(f"[SCHEDULE] #{schedule_id} → shift {entry['shiftId']} "
+              f"{entry['method']} @ {entry['time']}\n")
 
     device.sync_time()
 
@@ -29,13 +34,13 @@ def run(schedule_id: int):
         print(f"  {emp} → {name}")
 
     # Events — bounds are timezone-aware (Africa/Casablanca)
-    today = datetime.now(config.TZ).date().isoformat()
-    start, end = day_bounds()
+    day = date or datetime.now(config.TZ).date()
+    start, end = day_bounds(day)
     events = device.fetch_events(start, end)
 
-    # Safety net: keep only events whose local date is actually today,
+    # Safety net: keep only events whose local date is actually the target day,
     # in case the device interprets the boundary differently.
-    events = [e for e in events if e.get("time", "")[:10] == today]
+    events = [e for e in events if e.get("time", "")[:10] == day.isoformat()]
 
     print(f"\n[EVENTS] {len(events)} total ({start} → {end})\n")
 
@@ -56,7 +61,7 @@ def run(schedule_id: int):
 
         print(f"{e['time']:<26} {name:<22} {label:<25} {status}")
 
-    gateway.push(users, raw_users, events, entry)
+    gateway.push(users, raw_users, events, entry, dry_run=dry_run)
 
 
 def main():
@@ -77,6 +82,19 @@ def main():
         action="store_true",
         help="interactively write config.conf (how to locate the device, credentials)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show the access control results without sending them to the gateway "
+             "(schedule_id not required)",
+    )
+    parser.add_argument(
+        "--date",
+        type=date_cls.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="day to pull access control events for with --dry-run (default: today)",
+    )
     args = parser.parse_args()
 
     if args.configure:
@@ -87,10 +105,10 @@ def main():
         sync_work_modes()
         return
 
-    if args.schedule_id is None:
-        parser.error("schedule_id is required (or use --sync / --configure)")
+    if args.schedule_id is None and not args.dry_run:
+        parser.error("schedule_id is required (or use --dry-run / --sync / --configure)")
 
-    run(args.schedule_id)
+    run(args.schedule_id, dry_run=args.dry_run, date=args.date)
 
 
 if __name__ == "__main__":

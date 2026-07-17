@@ -1,4 +1,5 @@
 """Talking to the StorEyes gateway: identity, work modes, punch push."""
+import json
 import re
 from datetime import datetime
 
@@ -31,7 +32,7 @@ def fetch_work_modes() -> list:
     return r.json()
 
 
-def push(users: dict, raw_users: list, events: list, entry: dict):
+def push(users: dict, raw_users: list, events: list, entry: dict = None, dry_run: bool = False):
     creds = device.build_credentials(users, raw_users)
 
     employees = [
@@ -54,10 +55,15 @@ def push(users: dict, raw_users: list, events: list, entry: dict):
 
     body = {
         "timestamp": isapi_fmt(datetime.now(config.TZ)),
-        "target": {"shiftId": entry["shiftId"], "method": entry["method"]},
+        "target": {"shiftId": entry["shiftId"], "method": entry["method"]} if entry else None,
         "employees": employees,
         "punches": punches,
     }
+
+    if dry_run:
+        print(f"[DRY RUN] Would POST to {config.PUNCH_URL}:")
+        print(json.dumps(body, indent=2))
+        return
 
     r = requests.post(config.PUNCH_URL, json=body, headers=headers(), timeout=10)
     if r.status_code in (200, 204):
