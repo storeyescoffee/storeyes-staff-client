@@ -16,12 +16,15 @@ def _shift_hhmm(t: str, plus_minutes: int = 0) -> str:
 def write_schedule(work_modes: list) -> list:
     """Write one line per shift boundary: <n>,<shift_id>,<IN|OUT>,<time>
 
-    IN closes at startTime + tolerantLate + GRACE_MINUTES; OUT is endTime as-is.
+    IN closes at startTime + tolerantLate + GRACE_MINUTES; OUT closes at endTime + tolerantOut.
+    Modes without both a startTime and endTime (e.g. "congé") are skipped.
     """
     lines = []
     for wm in work_modes:
+        if not wm.get("startTime") or not wm.get("endTime"):
+            continue
         in_time = _shift_hhmm(wm["startTime"], (wm.get("tolerantLate") or 0) + config.GRACE_MINUTES)
-        out_time = _shift_hhmm(wm["endTime"])
+        out_time = _shift_hhmm(wm["endTime"], wm.get("tolerantOut") or 0)
         for method, hhmm in (("IN", in_time), ("OUT", out_time)):
             lines.append(f"{len(lines) + 1},{wm['id']},{method},{hhmm}")
 
