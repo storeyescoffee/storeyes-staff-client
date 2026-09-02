@@ -46,7 +46,7 @@ EVENT_MAP = {
 }
 
 # Successful access minors that count as a punch.
-PUNCH_MINORS = {38, 40, 43}  # fingerprint + card + PIN
+PUNCH_MINORS = {38, 40, 43, 1}  # fingerprint + card + PIN + local login
 
 
 def is_punch(e: dict) -> bool:
